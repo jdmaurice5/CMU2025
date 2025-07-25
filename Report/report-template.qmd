@@ -29,7 +29,7 @@ library(lme4)
 library(kdensity)
 library(factoextra)
 
-data_baseballsavant_2024 = read_csv("savant_data_2024.csv")
+data_baseballsavant_2024 = read_csv("data/savant_data_2024.csv")
 
 
 data_baseballsavant_2024=data_baseballsavant_2024 %>% mutate(middle=(strike_zone_bottom+strike_zone_top)/2) 
@@ -714,7 +714,7 @@ Since we examined individual players, we need a method to generalize our finding
 
 ```{r}
 #| echo: false
-results=read_csv("chi_square_results.csv")
+results=read_csv("data/chi_square_results.csv")
 alpha_bonf <- 0.05 / nrow(results)
 
 # Flag as significant under Bonferroni
@@ -803,7 +803,7 @@ stowers_plots$contact_by_cluster %>%
 After a full offseason with the Marlins, Stowers is currently hitting .295 and has already accumulated 3.0 bWAR. This is his plot for 2025. 
 ```{r}
 #| echo: false
-data_baseballsavant_2025 = read_csv("savant_data_2025.csv")
+data_baseballsavant_2025 = read_csv("data/savant_data_2025.csv")
 
 
 data_baseballsavant_2025=data_baseballsavant_2025 %>% mutate(middle=(strike_zone_bottom+strike_zone_top)/2) 
