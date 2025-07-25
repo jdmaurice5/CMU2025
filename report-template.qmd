@@ -1,0 +1,1141 @@
+---
+title: "Clustering Swing Behavior Within MLB Hitters"
+author:
+  - Joseph Dante Maurice
+  - Tai Fowler
+date: "July 25, 2025"
+toc: true
+format:
+  html:
+    theme: cosmo
+    html-math-method: katex
+    self-contained: true
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+
+```{r}
+#| echo: false
+library(sabRmetrics)
+library(tidyverse)
+library(mclust)
+library(broom)
+library(ggmosaic)
+library(mgcv)
+library(lme4)
+library(kdensity)
+library(factoextra)
+
+data_baseballsavant_2024 = read_csv("savant_data_2024.csv")
+
+
+data_baseballsavant_2024=data_baseballsavant_2024 %>% mutate(middle=(strike_zone_bottom+strike_zone_top)/2) 
+
+swing= c("foul", "hit_into_play", "swinging_strike", "swinging_strike_blocked", "foul_tip")
+
+swing_data_2024=data_baseballsavant_2024 %>% filter(description %in% swing)
+
+swing_data_2024=swing_data_2024 %>% mutate(ideal_attack_angle = ifelse(attack_angle>=5 & attack_angle<=20, 1, 0)) %>%
+  mutate(ideal_attack_angle=as_factor(ideal_attack_angle))
+
+
+remove_partial_swings <- function(swing) {
+  
+  swing_filtered <- swing |>
+    dplyr::filter(
+      # remove bunt attempts
+      !(
+        stringr::str_detect(description, "bunt") |  # only detects missed and foul bunt attempts
+          (description == "hit_into_play" & stringr::str_detect(des, " bunt"))  # covers fair bunts
+      ),
+      # remove checked swings (which only count as swings if they accidentally result in contact)
+      bat_speed > 50  # this seemingly arbitrary cutoff is the result of extensive EDA
+    )
+  
+  return(swing_filtered)
+}
+
+swing_data_2024=remove_partial_swings(swing_data_2024)
+
+swing_data_2024 <- swing_data_2024 |>
+  sabRmetrics::get_quadratic_coef(source = "baseballsavant") |>
+  sabRmetrics::get_trackman_metrics()
+
+recreate_squared_up <- function(data) {
+  
+  data_enhanced <- data |>
+    dplyr::mutate(
+      plate_y = 17 / 12,  # back of home plate is zero; front is 17 inches
+      plate_time = (-by - sqrt(by^2 - 4 * (ay / 2) * (cy - plate_y))) / (2 * (ay / 2)),
+      plate_speed = 0.6818182 * sqrt(
+        (ax * plate_time + bx)^2 + (ay * plate_time + by)^2 + (az * plate_time + bz)^2
+      ),
+      squared_up = ifelse(
+        test = description == "hit_into_play" & !is.na(launch_speed),
+        yes = (launch_speed / (1.23 * bat_speed + 0.23 * plate_speed)) > 0.8,
+        no = FALSE
+      )
+    ) |>
+    dplyr::select(dplyr::all_of(colnames(data)), squared_up) # drop intermediate columns
+  
+  return(data_enhanced)
+}
+
+swing_data_2024=recreate_squared_up(swing_data_2024)
+
+recreate_blasts <- function(data) {
+  
+  data_enhanced <- data |>
+    dplyr::mutate(
+      plate_y = 17 / 12,  # back of home plate is zero; front is 17 inches
+      plate_time = (-by - sqrt(by^2 - 4 * (ay / 2) * (cy - plate_y))) / (2 * (ay / 2)),
+      plate_speed = 0.6818182 * sqrt(
+        (ax * plate_time + bx)^2 + (ay * plate_time + by)^2 + (az * plate_time + bz)^2
+      ),
+      blast = ifelse(
+        test = description == "hit_into_play" & !is.na(launch_speed),
+        yes = ((launch_speed / (1.23 * bat_speed + 0.23 * plate_speed)) * 100)+bat_speed>=164,
+        no = FALSE
+      )
+    ) |>
+    dplyr::select(dplyr::all_of(colnames(data)), blast) # drop intermediate columns
+  
+  return(data_enhanced)
+}
+
+swing_data_2024=recreate_blasts(swing_data_2024)
+
+
+swing_data_2024 <- swing_data_2024 %>%
+  mutate(
+    runner_on_first = !is.na(pre_runner_1b_id),
+    runner_on_second = !is.na(pre_runner_2b_id),
+    runner_on_third = !is.na(pre_runner_3b_id),
+    base_state = case_when(
+      runner_on_first & runner_on_second & runner_on_third ~ "1B_2B_3B",
+      runner_on_first & runner_on_second ~ "1B_2B",
+      runner_on_first & runner_on_third ~ "1B_3B",
+      runner_on_second & runner_on_third ~ "2B_3B",
+      runner_on_first ~ "1B",
+      runner_on_second ~ "2B",
+      runner_on_third ~ "3B",
+      TRUE ~ "Empty"
+    ),
+    game_state = paste0(base_state, " | ", outs, " Outs")
+  )
+```
+
+```{r}
+#| echo: false
+plot_player_clusters <- function(data, player_name) {
+  library(mclust)
+  library(ggplot2)
+  library(dplyr)
+  library(ggmosaic)
+  library(factoextra)
+  library(stringr)
+  theme_set(theme_light())
+
+  # Format player name for titles
+  name_parts <- str_split(player_name, ",\\s*")[[1]]
+  name_title <- paste(name_parts[2], name_parts[1])
+
+  # Filter player data and add row_id for tracking rows
+  player <- data %>%
+    filter(batter_name == player_name) %>%
+    mutate(row_id = row_number())  # <--- Important: add row_id here
+
+  # Prepare data for clustering: keep row_id to join later
+  player_clean <- player %>%
+    select(row_id, attack_direction, swing_path_tilt, attack_angle, bat_speed, swing_length) %>%
+    filter(if_all(-row_id, ~ !is.na(.) & is.finite(.)))
+
+  # Run Mclust on player_clean (without row_id)
+  player_mclust <- Mclust(player_clean %>% select(-row_id))
+
+  # Add cluster to player_clean (same order as clustering)
+  player_clean <- player_clean %>%
+    mutate(cluster = as.factor(player_mclust$classification))
+
+  # Join clusters back to full player data using row_id
+  player <- left_join(player, player_clean %>% select(row_id, cluster), by = "row_id")
+
+  # Add scoring situation flags to player
+  player <- player %>%
+    mutate(
+      runner_scoring_position = runner_on_second == TRUE | runner_on_third == TRUE,
+      sac_fly_op = runner_on_third == TRUE & outs < 2,
+      late_sac_fly_op = inning >= 7 &
+        bat_score_diff %in% c(-1, 0) &
+        runner_on_third == TRUE &
+        outs < 2
+    ) %>% 
+    mutate(
+      leverage_group = case_when(
+      balls > strikes ~ "Ahead",
+      balls == strikes ~ "Even",
+      balls < strikes ~ "Behind",
+      TRUE ~ NA_character_
+      )
+    )
+
+  
+  plot_leverage <- ggplot(player %>%
+    filter(!is.na(cluster), !is.na(leverage_group))) +
+    geom_mosaic(aes(x = product(cluster, leverage_group), fill = cluster)) +
+    labs(title = paste0(name_title, " - Cluster vs. Count Leverage Group"),
+         x = "Cluster × Count Leverage",
+         y = "Proportion") +
+    theme_minimal() +
+    theme(
+        plot.title = element_text(size = 18, face = "bold"),
+        axis.title.x = element_text(size = 14),
+        axis.title.y = element_text(size = 14),
+        axis.text.x = element_text(size = 12),
+        legend.title = element_text(size = 14),
+        legend.text = element_text(size = 12),
+        axis.text.y = element_blank()
+    )
+  # Mosaic Plots (using player with cluster)
+  plot1 <- ggplot(player) +
+    geom_mosaic(aes(x = product(cluster, runner_scoring_position), fill = cluster)) +
+    ggtitle(paste(name_title, "- Cluster vs. RSP"))
+
+  plot2 <- ggplot(player) +
+    geom_mosaic(aes(x = product(cluster, sac_fly_op), fill = cluster)) +
+    ggtitle(paste(name_title, "- Cluster vs. Sac Fly Opportunity"))
+
+  plot3 <- ggplot(player) +
+    geom_mosaic(aes(x = product(cluster, strikes), fill = cluster)) +
+    ggtitle(paste(name_title, "- Cluster vs. Strikes"))
+
+  plot5 <- ggplot(player) +
+    geom_mosaic(aes(x = product(cluster, late_sac_fly_op), fill = cluster)) +
+    ggtitle(paste(name_title, "- Cluster vs. Late Close Sac Fly Opportunity"))
+
+  # Summary: % squared up and blast overall
+  squared_up_pct <- mean(player$squared_up == TRUE, na.rm = TRUE)
+  blast_pct <- mean(player$blast == TRUE, na.rm = TRUE)
+
+
+
+  # Launch angle summary by cluster
+  avg_launch_by_cluster <- player %>%
+    filter(!is.na(launch_angle)) %>%
+    group_by(cluster) %>%
+    summarise(avg_launch_angle = mean(launch_angle), .groups = "drop")
+
+
+
+  # Launch angle density plot
+  plot4 <- player %>%
+    filter(!is.na(launch_angle)) %>%
+    ggplot(aes(x = launch_angle, fill = cluster)) +
+    geom_density(alpha = 0.4) +
+    ggtitle(paste(name_title, "- Launch Angle by Cluster")) +
+    theme_minimal()
+
+  # Contact quality summary by cluster
+  contact_by_cluster <- player %>%
+    group_by(cluster) %>%
+    summarise(
+      n = n(),
+      squared_up_pct = mean(squared_up == TRUE, na.rm = TRUE),
+      blast_pct = mean(blast == TRUE, na.rm = TRUE),
+      contact_pct = mean(!(description %in% c("swinging_strike", "swinging_strike_blocked")), na.rm = TRUE),
+      two_strike_contact_pct = mean(strikes == 2 & !(description %in% c("swinging_strike", "swinging_strike_blocked")), na.rm = TRUE) /
+        mean(strikes == 2, na.rm = TRUE),
+      xwoba = mean(expected_woba, na.rm = TRUE),
+      swing_length = mean(swing_length, na.rm=TRUE),
+      .groups = "drop"
+    )
+
+
+
+  # Zone location calculation
+  player <- player %>%
+    mutate(
+      zone_height = strike_zone_top - strike_zone_bottom,
+      vertical_zone = case_when(
+        plate_z > strike_zone_top - (1 / 3 * zone_height) ~ "high",
+        plate_z < strike_zone_bottom + (1 / 3 * zone_height) ~ "low",
+        TRUE ~ "middle"
+      ),
+      horizontal_zone = case_when(
+        plate_x < -0.71 + (1 / 3 * 1.42) ~ "inside",
+        plate_x > 0.71 - (1 / 3 * 1.42) ~ "outside",
+        TRUE ~ "middle"
+      ),
+      location_zone = paste(vertical_zone, horizontal_zone, sep = "-"),
+      strike_group = ifelse(strikes == 2, "2 Strikes", "<2 Strikes")
+    )
+
+  # Mosaic plot: Pitch Type vs Cluster (2-strike counts only)
+  plot6 <- player %>%
+    filter(strikes == 2, !is.na(pitch_name)) %>%
+    add_count(pitch_name, name = "pitch_count") %>%
+    filter(pitch_count >= 20) %>%
+    ggplot() +
+    geom_mosaic(aes(x = product(cluster, pitch_name), fill = cluster)) +
+    ggtitle(paste(name_title, "- Cluster vs. Pitch Type (2 Strikes)")) +
+    labs(x = "Cluster × Pitch Type",
+         y = "Proportion") +
+    theme_minimal()+
+    theme(
+        plot.title = element_text(size = 24, face = "bold"),  # Title size
+        axis.title.x = element_blank(),               # X-axis label size
+        axis.title.y = element_text(size = 15),               # Y-axis label size
+        axis.text.x = element_text(size = 15),
+        legend.title = element_text(size = 20),     # Legend title size
+    legend.text = element_text(size = 18),
+    axis.text.y = element_blank()
+    )
+  
+  player <- player %>%
+    mutate(
+      zone_height = strike_zone_top - strike_zone_bottom,
+      vertical_zone = case_when(
+        plate_z > strike_zone_top - (1 / 3 * zone_height) ~ "high",
+        plate_z < strike_zone_bottom + (1 / 3 * zone_height) ~ "low",
+        TRUE ~ "middle"
+      ),
+      horizontal_zone = case_when(
+        plate_x < -0.71 + (1 / 3 * 1.42) ~ "inside",
+        plate_x > 0.71 - (1 / 3 * 1.42) ~ "outside",
+        TRUE ~ "middle"
+      ),
+      location_zone = paste(vertical_zone, horizontal_zone, sep = "-"),
+      strike_group = ifelse(strikes == 2, "2 Strikes", "<2 Strikes")
+    )
+  plot8 <- ggplot(player %>%
+    filter(!is.na(cluster), !is.na(strikes))) +
+    geom_mosaic(aes(x = product(cluster, strike_group), fill = cluster)) +
+    labs(title = paste0(name_title, " - Cluster vs. Strikes"),
+         x = "Cluster × Strike Group",
+         y = "Proportion") +
+    theme_minimal()+
+    theme(
+        plot.title = element_text(size = 18, face = "bold"),  # Title size
+        axis.title.x = element_blank(),               # X-axis label size
+        axis.title.y = element_text(size = 14),               # Y-axis label size
+        axis.text.x = element_text(size = 12),
+        legend.title = element_text(size = 14),     # Legend title size
+    legend.text = element_text(size = 12),
+    axis.text.y = element_blank()
+    )
+
+  # Mosaic plot: Location Zone vs Cluster (2-strike counts only)
+  plot7 <- player %>%
+    filter(strikes == 2) %>%
+    ggplot() +
+    geom_mosaic(aes(x = product(cluster, location_zone), fill = cluster)) +
+    ggtitle(paste(name_title, "- Cluster vs. Location (2 Strikes)"))+
+    theme(
+        plot.title = element_text(size = 24, face = "bold"),  # Title size
+        axis.title.x = element_blank(),               # X-axis label size
+        axis.title.y = element_text(size = 15),               # Y-axis label size
+        axis.text.x = element_text(size = 12),
+        legend.title = element_text(size = 20),     # Legend title size
+    legend.text = element_text(size = 18),
+    axis.text.y = element_blank()
+    )
+
+  # --- PCA Section ---
+  # Run PCA on cleaned data (exclude row_id and cluster)
+  pca_model <- prcomp(player_clean %>% select(-row_id, -cluster), scale. = TRUE)
+
+  # Add PC1 and PC2 scores to player_clean
+  player_clean <- player_clean %>%
+    mutate(
+      PC1 = pca_model$x[, 1],
+      PC2 = pca_model$x[, 2]
+    )
+
+  # Merge PC1 and PC2 back into full player data via row_id
+  player <- left_join(player, player_clean %>% select(row_id, PC1, PC2), by = "row_id")
+
+  # Optionally filter to keep only clustered rows
+  player <- player %>% filter(!is.na(cluster))
+
+  # Calculate variance explained labels for axes
+  pc_var <- pca_model$sdev^2
+  pc_var_exp <- pc_var / sum(pc_var)
+  pc1_label <- paste0("PC1 (", round(pc_var_exp[1] * 100, 1), "%)")
+  pc2_label <- paste0("PC2 (", round(pc_var_exp[2] * 100, 1), "%)")
+
+  # PCA scatter plot colored by cluster
+  pca_cluster_plot <- ggplot(player_clean, aes(x = PC1, y = PC2, color = cluster)) +
+    geom_point(alpha = 0.6, size = 2) +
+    theme_minimal() +
+    labs(
+      title = paste(name_title, "- PCA by Cluster"),
+      x = pc1_label,
+      y = pc2_label,
+      color = "Cluster"
+    ) +
+    scale_color_brewer(palette = "Set1")
+
+  # PCA biplot using factoextra (optional)
+  pca_plot <- fviz_pca_biplot(
+    pca_model,
+    label = "var",
+    alpha.ind = 0.25,
+    alpha.var = 0.75,
+    labelsize = 5,
+    col.var = "darkblue",
+    repel = TRUE,
+    title = paste(name_title, "PCA - Biplot")
+  )
+  
+    swing_reference <- player %>%
+      filter(description %in% c(
+        "swinging_strike", "swinging_strike_blocked",
+        "foul", "foul_tip",
+        "hit_into_play", "hit_into_play_score", "hit_into_play_no_out"
+      )) %>%
+      select(
+        row_id, cluster,
+        game_id, game_date, at_bat_number, pitch_number,
+        batter_name, pitcher_id, pitch_name,
+        description, events,
+        launch_angle, launch_speed,
+        plate_x, plate_z,
+        sac_fly_op, late_sac_fly_op,
+        strikes, balls, outs, inning, inning_topbot
+      ) %>%
+      arrange(game_date, at_bat_number, pitch_number)
+
+
+
+  # Return plots and summaries
+  return(list(
+    rsp_plot = plot1,
+    sac_fly_plot = plot2,
+    strikes_plot = plot3,
+    launch_plot = plot4,
+    late_sac_plot = plot5,
+    pitch_type_2s_plot = plot6,
+    location_2s_plot = plot7,
+    plot8=plot8,
+    plot_leverage=plot_leverage,
+    contact_by_cluster=contact_by_cluster
+  ))
+}
+```
+
+```{r}
+#| echo: false
+altuve_plots <- plot_player_clusters(swing_data_2024, "Altuve, Jose")
+albies_plots <- plot_player_clusters(swing_data_2024, "Albies, Ozzie")
+arenado_plots <- plot_player_clusters(swing_data_2024, "Arenado, Nolan")
+```
+
+
+
+---
+
+## Introduction 
+
+In baseball, a pitcher controls the game more than the hitter. The pitcher can take his time to select the pitch type and location carefully. Once the ball leaves the pitcher’s hand, it is the batter’s job to discern the information in milliseconds. He has to decide if he wants to swing and where to swing, all in the time it takes for a person to blink. This is part of the reason hitting is so difficult, and why even the best players fail seven out of ten times.
+
+Mirroring the game itself, baseball analytics have also favored the pitcher. Pitchers have gained access to their ball tracking data, which provides them with more information to tinker with and make them even more effective. Previously, batting metrics were also reactive; launch angle and exit velocity were two factors that hitters tried to optimize, but they were still heavily dependent on the pitch and their swing, for which they had no actual data. Recently, analytics have caught up to the offensive side of the game. Batters and analysts alike now have access to bat-tracking data. Five key metrics are bat speed, swing length, swing path tilt, attack angle, and attack direction. Now, hitters have access to data that they can use and study to optimize their mechanics and improve their effectiveness at the plate.
+	
+A lot of exploratory research has been conducted to identify swing archetypes among all Major League hitters. This research aims to apply a single approach to a group of hitters. We are attempting to go deeper and discover trends at the individual hitter level. For example, many hitters claim to have a “two-strike approach,” where they protect the plate and shorten up to put the ball in play, perhaps sacrificing power to reduce the risk of a strikeout. Or maybe hitters adopt a more “uppercut” swing when there is a runner on third and fewer than two outs, trying to hit a sacrifice fly. 
+	
+The catalyst for this project is based on these assumptions. In the past, we could only watch the TV and guess what these hitters were doing. Now we can quantify it and examine their approaches under the hood. We aimed to investigate our assumptions about hitters’ approaches by clustering their swings into distinct groups and identifying when hitters used different swing types.
+
+
+## Data
+
+All data used in this analysis is from the 2024 MLB season. This is because, given the newness of the data, it is the only full season of bat-tracking data we have. Each observation is a swing from the 2024 season, complete with pitch characteristics, bat-tracking, and the result of the play. We are using data from Baseball Savant, scraped using the `sabRmetrics` package. Here are some example rows:
+
+```{r}
+library(gt)
+
+swing_data_2024 %>%
+  filter(batter_name %in% c("Judge, Aaron", "Ohtani, Shohei", "Altuve, Jose")) %>%
+  group_by(batter_name) %>%
+  slice_head(n = 1) %>%  # Get one row per player
+  ungroup() %>%
+  select(batter_name, bat_speed, swing_length, swing_path_tilt, attack_angle, attack_direction) %>%
+  gt() %>%
+  tab_header(
+    title = "Sample of Swing Metrics (2024)"
+  ) %>%
+  cols_label(
+    batter_name = "Batter",
+    bat_speed = "Bat Speed",
+    swing_length = "Swing Length",
+    swing_path_tilt = "Swing Path Tilt",
+    attack_angle = "Attack Angle",
+    attack_direction = "Attack Direction"
+  ) %>%
+  fmt_number(
+    columns = c(bat_speed, swing_length, swing_path_tilt, attack_angle, attack_direction),
+    decimals = 1
+  ) %>%
+  cols_align(
+    align = "center",
+    columns = everything()
+  ) %>%
+  opt_table_outline()
+```
+
+
+### Data Cleaning
+
+For our analysis, we only wanted to consider full swings where the batter fully intended to make contact with the ball. We didn’t want to include check swings because the hitter is intentionally trying to stop himself from swinging and take the pitch. We also omitted bunts, as those are not true swings.
+	
+To aid in our analysis, we added two features to the data: squared up and blast. These are both indicators with values “TRUE” or “FALSE.” We created them using the definitions on Baseball Savant. A swing has “squared up” a ball when the exit velocity is at least 80% of its theoretical maximum. That percentage is also referred to as the squared-up rate. A blast is a swing where the squared-up percentage plus the bat speed equals at least 164. Adding these features enables us to evaluate the quality of a player’s swing, disregarding the outcome in the field.
+
+
+## Methods
+
+Because our goal was to identify distinct swing types for each hitter, we needed a method to evaluate the similarity between swings and to determine natural groupings within that space. To accomplish this, we applied Gaussian mixture modeling (GMM) to cluster each player's swings based on their swing-tracking characteristics. We fit each hitter's swing to a GMM by using R's `mclust` package. The model was fit using an Expectation-Maximization algorithm. Each swing was defined by the following features: bat speed, swing length, swing path tilt, attack angle, and attack direction. We chose to include these features, as they are each core components of a player's swing. 
+  
+We selected GMM over hard clustering approaches like k-means for two key reasons:
+  
+1. Flexibility: GMM assumes the data arises from a mixture of Gaussian distributions, allowing it to model soft cluster boundaries and capture overlapping clusters. This is particularly important given that hitters may exhibit multiple swing "types" depending on context (e.g., adopting a more protective approach in two-strike counts).
+
+2. Adaptive model complexity: Rather than manually specifying the number of clusters for each player, we used the Bayesian Information Criterion (BIC) to select the optimal number of components automatically. This approach scales well across the league and avoids imposing a rigid or uniform structure across all hitters.
+
+These advantages were critical for a project of this scope, where we clustered swings individually for every hitter in MLB. Using a fixed number of clusters would have ignored inter-player variability, while manual tuning would be labor-intensive and introduce potential subjectivity or bias.
+  
+Although we briefly considered applying Principal Component Analysis (PCA) to reduce dimensionality before clustering, we found that doing so did not substantially alter the clusters or resulting visualization. Ultimately, we retained the raw swing features to preserve the interpretability of the resulting clusters.
+
+
+## Results
+
+After applying GMM clustering to each MLB hitter's swing data, we used mosaic plots to compare how the distribution of swings changed in certain situations. One situation we examined was how a player's swing changed when they had two strikes against them. When a hitter is one pitch away from striking out, they may change their swing in an attempt to put the ball in play and make something happen. Hitters may claim to "shorten up" or choke up on the bat, but now we can look behind the curtain and see what is going on.
+
+
+
+::: {.panel-tabset}
+
+## Altuve
+
+```{r}
+altuve_plots$plot8
+```
+
+## Albies
+
+```{r}
+albies_plots$plot8
+```
+
+## Arenado
+
+```{r}
+arenado_plots$plot8
+```
+
+:::
+
+
+Looking at a few of these plots, a notable trend emerged: hitters tend to use "worse" swings in two-strike counts compared to other situations. Below you can see how contact and quality of contact vary by cluster.
+
+::: {.panel-tabset}
+
+## Altuve
+```{r}
+library(dplyr)
+library(gt)
+
+altuve_plots$contact_by_cluster %>%
+  select(
+    cluster,
+    n,
+    contact_pct,
+    squared_up_pct,
+    blast_pct
+  ) %>%
+  gt() %>%
+  tab_header(
+    title = "Altuve Contact Quality by Cluster"
+  ) %>%
+  cols_label(
+    cluster = "Cluster",
+    n = "Number of Swings",
+    contact_pct = "Contact %",
+    squared_up_pct = "Squared Up %",
+    blast_pct = "Blast %"
+  ) %>%
+  fmt_percent(
+    columns = c(contact_pct, squared_up_pct, blast_pct),
+    decimals = 2
+  ) %>%
+  cols_align(
+    align = "center",
+    columns = everything()
+  ) %>%
+  opt_table_outline()
+
+```
+
+
+## Albies
+```{r}
+library(dplyr)
+library(gt)
+
+albies_plots$contact_by_cluster %>%
+  select(
+    cluster,
+    n,
+    contact_pct,
+    squared_up_pct,
+    blast_pct
+  ) %>%
+  gt() %>%
+  tab_header(
+    title = "Albies Contact Quality by Cluster"
+  ) %>%
+  cols_label(
+    cluster = "Cluster",
+    n = "Number of Swings",
+    contact_pct = "Contact %",
+    squared_up_pct = "Squared Up %",
+    blast_pct = "Blast %"
+  ) %>%
+  fmt_percent(
+    columns = c(contact_pct, squared_up_pct, blast_pct),
+    decimals = 2
+  ) %>%
+  cols_align(
+    align = "center",
+    columns = everything()
+  ) %>%
+  opt_table_outline()
+
+```
+
+## Arenado
+```{r}
+library(dplyr)
+library(gt)
+
+arenado_plots$contact_by_cluster %>%
+  select(
+    cluster,
+    n,
+    contact_pct,
+    squared_up_pct,
+    blast_pct
+  ) %>%
+  gt() %>%
+  tab_header(
+    title = "Arenado Contact Quality by Cluster"
+  ) %>%
+  cols_label(
+    cluster = "Cluster",
+    n = "Number of Swings",
+    contact_pct = "Contact %",
+    squared_up_pct = "Squared Up %",
+    blast_pct = "Blast %"
+  ) %>%
+  fmt_percent(
+    columns = c(contact_pct, squared_up_pct, blast_pct),
+    decimals = 2
+  ) %>%
+  cols_align(
+    align = "center",
+    columns = everything()
+  ) %>%
+  opt_table_outline()
+
+```
+
+:::
+
+These findings challenge the common belief that players adopt a more disciplined, contact-oriented approach with two strikes. Importantly, by "worse" swing, we do not imply that hitters are consciously choosing less effective swings. Instead, contextual factors (pitch type, location, etc) appear to induce swings from the lower-performing regions of a player's swing distribution. Our clustering doesn't suggest that players have five entirely distinct swing mechanics. Instead, we've captured different areas within each player's overall swing distribution. This allows us to examine when different swing types emerge and begin to explore why these shifts occur. A few such possibilities are the pitch location and pitch type. Here are how the swings are distributed when looking at those characteristics.
+ 	
+::: {.panel-tabset}
+
+## Altuve Pitch Type
+
+```{r}
+#| fig-height: 12
+#| fig-width: 16
+altuve_plots$pitch_type_2s_plot
+```
+
+## Altuve Location
+
+```{r}
+#| fig-height: 12
+#| fig-width: 16
+altuve_plots$location_2s_plot
+```
+
+
+## Albies Pitch Type
+
+```{r}
+#| fig-height: 12
+#| fig-width: 16
+albies_plots$pitch_type_2s_plot
+```
+
+## Albies Location
+
+```{r}
+#| fig-height: 12
+#| fig-width: 16
+albies_plots$location_2s_plot
+```
+
+
+## Arenado Pitch Type
+
+```{r}
+#| fig-height: 12
+#| fig-width: 16
+arenado_plots$pitch_type_2s_plot
+```
+
+## Arenado Location
+
+```{r}
+#| fig-height: 12
+#| fig-width: 16
+arenado_plots$location_2s_plot
+```
+
+
+:::
+
+### Chi-Square Testing
+Since we examined individual players, we need a method to generalize our findings across all batters. One way to do this is through a chi-square test for independence. Our null hypothesis was that the swing cluster is independent of whether a batter has two strikes or not. We ran the test on hitters with at least 420 swings (the median in our data set) to ensure there were enough points for reliable clustering and generalizations. After conducting the test on 307 hitters, 96 of them had statistically significant dependence between strikes and swing clusters after accounting for multiple testing, or about 31%.
+
+
+```{r}
+#| echo: false
+results=read_csv("chi_square_results.csv")
+alpha_bonf <- 0.05 / nrow(results)
+
+# Flag as significant under Bonferroni
+results$significant_bonf <- results$p_value <= alpha_bonf
+
+```
+
+
+
+```{r}
+#| fig-cap: "This is a density plot of each tested player's p-value. The green dotted line is the standard 0.05 rejection value. The red dashed line is the corrected rejection value of about 0.00016"
+ggplot(results, aes(x = p_value)) +
+  geom_density(fill = "skyblue", alpha = 0.6) +
+  geom_vline(xintercept = 0.05, linetype = "dotted", color = "darkgreen", size = 1) +
+  geom_vline(xintercept = 0.05 / nrow(results), linetype = "dashed", color = "red", size = 1) +
+  labs(
+    title = "Density Plot of Chi-Square P-Values",
+    x = "P-Value",
+    y = "Density"
+  ) +
+  theme_minimal()+
+  theme(
+        plot.title = element_text(size = 18, face = "bold"),  # Title size
+        axis.title.x = element_text(size = 14),               # X-axis label size
+        axis.title.y = element_text(size = 14),               # Y-axis label size
+        axis.text.x = element_text(size = 12),
+        legend.title = element_text(size = 14),     # Legend title size
+    legend.text = element_text(size = 12),
+    axis.text.y = element_blank()
+    )
+
+```
+
+
+
+
+While it is interesting to look at the hitters who do display significant discrepancies in their swing distribution in different strike situations, it is also good to look at hitters who don't. One such hitter is Luis Arraez, known for his high contact percentage and low strikeout rate. For a hitter with a profile like Arraez, it makes sense that his swing distribution doesn't significantly vary when he has two strikes. Arraez continues to draw from the better part of his swing distribution in disadvantageous counts, which allows him to not only avoid strikeouts but also provide quality contact that supports his high average.
+
+Our process of clustering and then testing discovered trends provides value in not only better understanding what is going on with hitters, but also in helping us understand a hitter's performance. While we don't have complete 2025 data, with over half the season played as of July 23, 2025, we can compare players' swings and their performance across seasons. One key example is Kyle Stowers, a first-time all-star in 2025 for the Miami Marlins. In 2024, splitting time between the Baltimore Orioles and Miami Marlins, Stowers' batting average was .208, and his bWAR was -0.5. Here is his cluster versus strike plot for 2024.
+
+```{r}
+#| echo: false
+stowers_plots <- plot_player_clusters(swing_data_2024, "Stowers, Kyle")
+```
+
+```{r}
+stowers_plots$plot8
+```
+
+```{r}
+library(dplyr)
+library(gt)
+
+stowers_plots$contact_by_cluster %>%
+  select(
+    cluster,
+    n,
+    contact_pct,
+    squared_up_pct,
+    blast_pct
+  ) %>%
+  gt() %>%
+  tab_header(
+    title = "Stowers 2024 Contact Quality by Cluster"
+  ) %>%
+  cols_label(
+    cluster = "Cluster",
+    n = "Number of Swings",
+    contact_pct = "Contact %",
+    squared_up_pct = "Squared Up %",
+    blast_pct = "Blast %"
+  ) %>%
+  fmt_percent(
+    columns = c(contact_pct, squared_up_pct, blast_pct),
+    decimals = 2
+  ) %>%
+  cols_align(
+    align = "center",
+    columns = everything()
+  ) %>%
+  opt_table_outline()
+
+```
+
+
+After a full offseason with the Marlins, Stowers is currently hitting .295 and has already accumulated 3.0 bWAR. This is his plot for 2025. 
+```{r}
+#| echo: false
+data_baseballsavant_2025 = read_csv("savant_data_2025.csv")
+
+
+data_baseballsavant_2025=data_baseballsavant_2025 %>% mutate(middle=(strike_zone_bottom+strike_zone_top)/2) 
+
+swing= c("foul", "hit_into_play", "swinging_strike", "swinging_strike_blocked", "foul_tip")
+
+swing_data_2025=data_baseballsavant_2025 %>% filter(description %in% swing)
+
+swing_data_2025=swing_data_2025 %>% mutate(ideal_attack_angle = ifelse(attack_angle>=5 & attack_angle<=20, 1, 0)) %>%
+  mutate(ideal_attack_angle=as_factor(ideal_attack_angle))
+
+
+remove_partial_swings <- function(swing) {
+  
+  swing_filtered <- swing |>
+    dplyr::filter(
+      # remove bunt attempts
+      !(
+        stringr::str_detect(description, "bunt") |  # only detects missed and foul bunt attempts
+          (description == "hit_into_play" & stringr::str_detect(des, " bunt"))  # covers fair bunts
+      ),
+      # remove checked swings (which only count as swings if they accidentally result in contact)
+      bat_speed > 50  # this seemingly arbitrary cutoff is the result of extensive EDA
+    )
+  
+  return(swing_filtered)
+}
+
+swing_data_2024=remove_partial_swings(swing_data_2025)
+
+swing_data_2025 <- swing_data_2025 |>
+  sabRmetrics::get_quadratic_coef(source = "baseballsavant") |>
+  sabRmetrics::get_trackman_metrics()
+
+recreate_squared_up <- function(data) {
+  
+  data_enhanced <- data |>
+    dplyr::mutate(
+      plate_y = 17 / 12,  # back of home plate is zero; front is 17 inches
+      plate_time = (-by - sqrt(by^2 - 4 * (ay / 2) * (cy - plate_y))) / (2 * (ay / 2)),
+      plate_speed = 0.6818182 * sqrt(
+        (ax * plate_time + bx)^2 + (ay * plate_time + by)^2 + (az * plate_time + bz)^2
+      ),
+      squared_up = ifelse(
+        test = description == "hit_into_play" & !is.na(launch_speed),
+        yes = (launch_speed / (1.23 * bat_speed + 0.23 * plate_speed)) > 0.8,
+        no = FALSE
+      )
+    ) |>
+    dplyr::select(dplyr::all_of(colnames(data)), squared_up) # drop intermediate columns
+  
+  return(data_enhanced)
+}
+
+swing_data_2025=recreate_squared_up(swing_data_2025)
+
+recreate_blasts <- function(data) {
+  
+  data_enhanced <- data |>
+    dplyr::mutate(
+      plate_y = 17 / 12,  # back of home plate is zero; front is 17 inches
+      plate_time = (-by - sqrt(by^2 - 4 * (ay / 2) * (cy - plate_y))) / (2 * (ay / 2)),
+      plate_speed = 0.6818182 * sqrt(
+        (ax * plate_time + bx)^2 + (ay * plate_time + by)^2 + (az * plate_time + bz)^2
+      ),
+      blast = ifelse(
+        test = description == "hit_into_play" & !is.na(launch_speed),
+        yes = ((launch_speed / (1.23 * bat_speed + 0.23 * plate_speed)) * 100)+bat_speed>=164,
+        no = FALSE
+      )
+    ) |>
+    dplyr::select(dplyr::all_of(colnames(data)), blast) # drop intermediate columns
+  
+  return(data_enhanced)
+}
+
+swing_data_2025=recreate_blasts(swing_data_2025)
+
+
+swing_data_2025 <- swing_data_2025 %>%
+  mutate(
+    runner_on_first = !is.na(pre_runner_1b_id),
+    runner_on_second = !is.na(pre_runner_2b_id),
+    runner_on_third = !is.na(pre_runner_3b_id),
+    base_state = case_when(
+      runner_on_first & runner_on_second & runner_on_third ~ "1B_2B_3B",
+      runner_on_first & runner_on_second ~ "1B_2B",
+      runner_on_first & runner_on_third ~ "1B_3B",
+      runner_on_second & runner_on_third ~ "2B_3B",
+      runner_on_first ~ "1B",
+      runner_on_second ~ "2B",
+      runner_on_third ~ "3B",
+      TRUE ~ "Empty"
+    ),
+    game_state = paste0(base_state, " | ", outs, " Outs")
+  )
+
+```
+
+```{r}
+plot_player_clusters_25 <- function(data, player_name) {
+  # Format player name for titles
+  # Format player name for titles
+  name_parts <- str_split(player_name, ",\\s*")[[1]]
+  name_title <- paste(name_parts[2], name_parts[1])
+
+  # Filter player data
+  player <- data %>%
+    filter(batter_name == player_name) %>%
+    mutate(row_id = row_number())  # add row ID to join later
+
+  # Clean for clustering
+  player_clean <- player %>%
+    select(row_id, attack_direction, swing_path_tilt, attack_angle, bat_speed, swing_length) %>%
+    filter(across(-row_id, ~ !is.na(.) & is.finite(.)))
+
+  # Mclust model
+  player_mclust <- Mclust(player_clean %>% select(-row_id))
+
+  # Add cluster to cleaned data
+  player_clean$cluster <- as.factor(player_mclust$classification)
+
+  # Join cluster back to original player data
+  player <- left_join(player, player_clean %>% select(row_id, cluster), by = "row_id")
+  player <- player %>% filter(!is.na(cluster))
+
+  # [Continue with the rest of your plotting logic here...]
+
+  # Add scoring situation flags
+player <- player %>%
+  mutate(
+    runner_scoring_position = runner_on_second == TRUE | runner_on_third == TRUE,
+    sac_fly_op = runner_on_third == TRUE & outs < 2,
+    late_sac_fly_op = inning >= 7 &
+                      bat_score_diff %in% c(-1, 0) &
+                      runner_on_third == TRUE &
+                      outs < 2
+  )
+
+  # Mosaic Plots
+  plot1 <- ggplot(player) +
+    geom_mosaic(aes(x = product(cluster, runner_scoring_position), fill = cluster)) +
+    ggtitle(paste(name_title, "2025 - Cluster vs. RSP"))
+
+  plot2 <- ggplot(player) +
+    geom_mosaic(aes(x = product(cluster, sac_fly_op), fill = cluster)) +
+    ggtitle(paste(name_title, "2025 - Cluster vs. Sac Fly Opportunity"))
+
+  plot3 <- ggplot(player) +
+    geom_mosaic(aes(x = product(cluster, strikes), fill = cluster)) +
+    ggtitle(paste(name_title, "2025 - Cluster vs. Strikes"))
+  plot5 <- ggplot(player) +
+    geom_mosaic(aes(x = product(cluster, late_sac_fly_op), fill = cluster)) +
+    ggtitle(paste(name_title, "2025 - Cluster vs. Late Close Sac Fly Opportunity"))
+
+  # Summary: % squared up and blast overall
+  squared_up_pct <- mean(player$squared_up == TRUE, na.rm = TRUE)
+  blast_pct <- mean(player$blast == TRUE, na.rm = TRUE)
+
+
+
+  # Launch angle summary by cluster
+  avg_launch_by_cluster <- player %>%
+    filter(!is.na(launch_angle)) %>%
+    group_by(cluster) %>%
+    summarise(avg_launch_angle = mean(launch_angle), .groups = "drop")
+
+
+
+  # Launch angle density plot
+  plot4 <- player %>%
+    filter(!is.na(launch_angle)) %>%
+    ggplot(aes(x = launch_angle, fill = cluster)) +
+    geom_density(alpha = 0.4) +
+    ggtitle(paste(name_title, "- Launch Angle by Cluster")) +
+    theme_minimal()
+
+  # Contact quality summary by cluster
+  contact_by_cluster <- player %>%
+    group_by(cluster) %>%
+    summarise(
+      n = n(),
+      squared_up_pct = mean(squared_up == TRUE, na.rm = TRUE),
+      blast_pct = mean(blast == TRUE, na.rm = TRUE),
+      contact_pct = mean(!(description %in% c("swinging_strike", "swinging_strike_blocked")), na.rm = TRUE),
+      two_strike_contact_pct = mean(strikes == 2 & !(description %in% c("swinging_strike", "swinging_strike_blocked")), na.rm = TRUE) /
+                               mean(strikes == 2, na.rm = TRUE),
+      xwoba = mean(expected_woba, na.rm=TRUE),
+      .groups = "drop"
+    )
+
+
+  player <- player %>%
+    mutate(
+      zone_height = strike_zone_top - strike_zone_bottom,
+      vertical_zone = case_when(
+        plate_z > strike_zone_top - (1/3 * zone_height) ~ "high",
+        plate_z < strike_zone_bottom + (1/3 * zone_height) ~ "low",
+        TRUE ~ "middle"
+      ),
+      horizontal_zone = case_when(
+        plate_x < -0.71 + (1/3 * 1.42) ~ "inside",
+        plate_x > 0.71 - (1/3 * 1.42) ~ "outside",
+        TRUE ~ "middle"
+      ),
+      location_zone = paste(vertical_zone, horizontal_zone, sep = "-"),
+      strike_group = ifelse(strikes == 2, "2 Strikes", "<2 Strikes")
+    )
+
+  # Mosaic plot: Pitch Type vs Cluster (only 2-strike counts)
+  plot6 <- player %>%
+    filter(strikes == 2, !is.na(pitch_name)) %>%
+    ggplot() +
+    geom_mosaic(aes(x = product(cluster, pitch_name), fill = cluster)) +
+    ggtitle(paste(name_title, "2025 - Cluster vs. Pitch Type (2 Strikes)"))
+
+  # Mosaic plot: Location Zone vs Cluster (only 2-strike counts)
+  plot7 <- player %>%
+    filter(strikes == 2) %>%
+    ggplot() +
+    geom_mosaic(aes(x = product(cluster, location_zone), fill = cluster)) +
+    ggtitle(paste(name_title, "2025 - Cluster vs. Location (2 Strikes)"))
+    
+  plot8 <- ggplot(player %>%
+    filter(!is.na(cluster), !is.na(strikes))) +
+    geom_mosaic(aes(x = product(cluster, strike_group), fill = cluster)) +
+    labs(title = paste0(name_title, " - Cluster vs. Strikes"),
+         x = "Cluster × Strike Group",
+         y = "Proportion") +
+    theme_minimal()+
+    theme(
+        plot.title = element_text(size = 18, face = "bold"),  # Title size
+        axis.title.x = element_blank(),               # X-axis label size
+        axis.title.y = element_text(size = 14),               # Y-axis label size
+        axis.text.x = element_text(size = 12),
+        legend.title = element_text(size = 14),     # Legend title size
+    legend.text = element_text(size = 12),
+    axis.text.y = element_blank()
+    )
+
+  # Return list of plots and summaries
+  return(list(
+    rsp_plot = plot1,
+    sac_fly_plot = plot2,
+    strikes_plot = plot3,
+    launch_plot = plot4,
+    late_sac_plot = plot5,
+    pitch_type_2s_plot = plot6,
+    location_2s_plot = plot7,
+    plot8=plot8,
+    contact_by_cluster=contact_by_cluster
+  ))
+}
+```
+
+```{r}
+#| echo: false
+stowers_data=swing_data_2025 %>% filter(batter_name=="Stowers, Kyle")
+plots <- plot_player_clusters_25(stowers_data, "Stowers, Kyle")
+```
+
+```{r}
+plots$plot8
+```
+
+```{r}
+library(dplyr)
+library(gt)
+
+plots$contact_by_cluster %>%
+  select(
+    cluster,
+    n,
+    contact_pct,
+    squared_up_pct,
+    blast_pct
+  ) %>%
+  gt() %>%
+  tab_header(
+    title = "Stowers 2025 Contact Quality by Cluster"
+  ) %>%
+  cols_label(
+    cluster = "Cluster",
+    n = "Number of Swings",
+    contact_pct = "Contact %",
+    squared_up_pct = "Squared Up %",
+    blast_pct = "Blast %"
+  ) %>%
+  fmt_percent(
+    columns = c(contact_pct, squared_up_pct, blast_pct),
+    decimals = 2
+  ) %>%
+  cols_align(
+    align = "center",
+    columns = everything()
+  ) %>%
+  opt_table_outline()
+
+```
+
+Stowers has clearly exhibited an ability to consistently use his "A" swing much more frequently than in 2024 in two-strike counts. His improvement in two-strike counts has certainly aided his rise this year.
+
+
+## Discussion
+
+These bat-tracking metrics have opened up numerous new avenues for research, both at the league level and the individual player level. Our analysis reveals that hitters’ swings are better understood as a distribution rather than as discrete, consciously chosen swing types. We have begun to show that through our work on hitters’ swings in two-strike and non-two-strike situations.
+
+### Limitations
+While we are very satisfied with our work and analysis, there were a few limitations.
+
+**Time Period of Analysis**: We only had a full year of data: the 2024 season. If we had multiple seasons of data, we would be able to go more in-depth to see how players’ swing distributions change year over year, like we did with Stowers.
+
+**Violation of GMM Assumptions**: While a GMM assumes underlying Gaussian (normal) distributions, a hitter’s swing distribution may be skewed with a long tail of poor swings.
+
+**Consistency Bias**: We are assuming that all swings from an entire season are from the same swing distribution. This overlooks the potential adjustments hitters may make throughout the season, which could disrupt our clustering.
+
+### Future Work
+
+From here, there are many possible paths to take our research. One thing we’d like to do is develop a mixed-effect model to predict contact on any swing given the pitch and swing characteristics. This would add another level to the never-ending battle between batter and pitcher as each strives to gain an edge over the other.
+
+Another extension of our study would be to incorporate our findings into sequencing models to examine how a hitter’s swing is affected by the previous pitches in the at bat. We’ve already shown how many hitters draw on the weaker part of their swing distribution when they have two strikes. Maybe specific sequences can emphasize those weaknesses.
+
+## Acknowledgements
+Special thanks to our advisor, Bryant Davis, as well as Quang Nguyen, Dr. Yurko, and our program TA’s for their guidance and support.
+
+
+## References
+
+Lambert, J. (2024, August 1). *Using MLB bat tracking data to better understand swings*. Driveline Baseball. Retrieved from [https://www.drivelinebaseball.com/2024/07/using-mlb-bat-tracking-data-to-better-understand-swings](https://www.drivelinebaseball.com/2024/07/using-mlb-bat-tracking-data-to-better-understand-swings)
+
+Powers, S. (2025). *sabRmetrics: Query {statsapi, baseballsavant.mlb.com} and fit fundamental sabermetric models*. Retrieved from [https://github.com/saberpowers/sabRmetrics/tree/v1.0.4](https://github.com/saberpowers/sabRmetrics/tree/v1.0.4)
+
+*Kyle Stowers Stats, Height, Weight, Position, Rookie Status & More*. Baseball Reference. Retrieved July 24, 2025, from [https://www.baseball-reference.com/players/s/stoweky01.shtml](https://www.baseball-reference.com/players/s/stoweky01.shtml)
+
+
