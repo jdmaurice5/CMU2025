@@ -725,7 +725,7 @@ results$significant_bonf <- results$p_value <= alpha_bonf
 
 
 ```{r}
-#| fig-cap: "This is a density plot of each tested player's p-value. The green dotted line is the standard 0.05 rejection value. The red dashed line is the corrected rejection value of about 0.00016"
+#| fig-cap: "This is a density plot of each tested player's p-value. The green dotted line is the standard 0.05 rejection value. The red dashed line is the Bonferroni corrected rejection value of about 0.00016"
 ggplot(results, aes(x = p_value)) +
   geom_density(fill = "skyblue", alpha = 0.6) +
   geom_vline(xintercept = 0.05, linetype = "dotted", color = "darkgreen", size = 1) +
@@ -751,7 +751,54 @@ ggplot(results, aes(x = p_value)) +
 
 
 
-While it is interesting to look at the hitters who do display significant discrepancies in their swing distribution in different strike situations, it is also good to look at hitters who don't. One such hitter is Luis Arraez, known for his high contact percentage and low strikeout rate. For a hitter with a profile like Arraez, it makes sense that his swing distribution doesn't significantly vary when he has two strikes. Arraez continues to draw from the better part of his swing distribution in disadvantageous counts, which allows him to not only avoid strikeouts but also provide quality contact that supports his high average.
+While it is interesting to look at the hitters who do display significant discrepancies in their swing distribution in different strike situations (such as the hitters above), it is also good to look at hitters who don't. One such hitter is Luis Arraez, known for his high contact percentage and low strikeout rate. 
+
+```{r}
+#| echo: false
+arraez_plots <- plot_player_clusters(swing_data_2024, "Arraez, Luis")
+```
+
+```{r}
+arraez_plots$plot8
+```
+
+
+```{r}
+library(dplyr)
+library(gt)
+
+arraez_plots$contact_by_cluster %>%
+  select(
+    cluster,
+    n,
+    contact_pct,
+    squared_up_pct,
+    blast_pct
+  ) %>%
+  gt() %>%
+  tab_header(
+    title = "Arraez Contact Quality by Cluster"
+  ) %>%
+  cols_label(
+    cluster = "Cluster",
+    n = "Number of Swings",
+    contact_pct = "Contact %",
+    squared_up_pct = "Squared Up %",
+    blast_pct = "Blast %"
+  ) %>%
+  fmt_percent(
+    columns = c(contact_pct, squared_up_pct, blast_pct),
+    decimals = 2
+  ) %>%
+  cols_align(
+    align = "center",
+    columns = everything()
+  ) %>%
+  opt_table_outline()
+
+```
+
+For a hitter with a profile like Arraez, it makes sense that his swing distribution doesn't significantly vary when he has two strikes. Arraez continues to draw from the better part of his swing distribution in disadvantageous counts, which allows him to not only avoid strikeouts but also provide quality contact that supports his high average.
 
 Our process of clustering and then testing discovered trends provides value in not only better understanding what is going on with hitters, but also in helping us understand a hitter's performance. While we don't have complete 2025 data, with over half the season played as of July 23, 2025, we can compare players' swings and their performance across seasons. One key example is Kyle Stowers, a first-time all-star in 2025 for the Miami Marlins. In 2024, splitting time between the Baltimore Orioles and Miami Marlins, Stowers' batting average was .208, and his bWAR was -0.5. Here is his cluster versus strike plot for 2024.
 
@@ -763,6 +810,7 @@ stowers_plots <- plot_player_clusters(swing_data_2024, "Stowers, Kyle")
 ```{r}
 stowers_plots$plot8
 ```
+
 
 ```{r}
 library(dplyr)
@@ -1132,16 +1180,25 @@ Special thanks to our advisor, Bryant Davis, as well as Quang Nguyen, Dr. Yurko,
 
 ## References
 
+*Kyle Stowers Stats, Height, Weight, Position, Rookie Status & More*. Baseball Reference. Retrieved July 24, 2025, from [https://www.baseball-reference.com/players/s/stoweky01.shtml](https://www.baseball-reference.com/players/s/stoweky01.shtml)
+
 Lambert, J. (2024, August 1). *Using MLB bat tracking data to better understand swings*. Driveline Baseball. Retrieved from [https://www.drivelinebaseball.com/2024/07/using-mlb-bat-tracking-data-to-better-understand-swings](https://www.drivelinebaseball.com/2024/07/using-mlb-bat-tracking-data-to-better-understand-swings)
 
 Powers, S. (2025). *sabRmetrics: Query {statsapi, baseballsavant.mlb.com} and fit fundamental sabermetric models*. Retrieved from [https://github.com/saberpowers/sabRmetrics/tree/v1.0.4](https://github.com/saberpowers/sabRmetrics/tree/v1.0.4)
 
-*Kyle Stowers Stats, Height, Weight, Position, Rookie Status & More*. Baseball Reference. Retrieved July 24, 2025, from [https://www.baseball-reference.com/players/s/stoweky01.shtml](https://www.baseball-reference.com/players/s/stoweky01.shtml)
-
 ## Contact Information
-J. Dante Maurice: 
-(201) 800 - 1227
-jdantemaurice@gmail.com
+**J. Dante Maurice**
+
+**Phone:** (201) 800 - 1227
+
+**Email:** jdantemaurice@gmail.com
+
+**Tai Fowler**
+
+**Phone:** (248) 954 - 9303
+
+**Email:** taichingeagle44@gmail.com
+
 
 
 
