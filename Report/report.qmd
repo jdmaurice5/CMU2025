@@ -713,7 +713,7 @@ arenado_plots$location_2s_plot
 :::
 
 To help understand what we are referring to when we say "Cluster 1 swing" vs a "Cluster 3 swing",
-below are videos of Jose Altuve, two swings from Cluster 1 and two from Cluster 3.
+below are videos of Jose Altuve, two swings from Cluster 1 and two swings from Cluster 3.
 
 ::: {.panel-tabset}
 
