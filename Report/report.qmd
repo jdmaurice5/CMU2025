@@ -1,8 +1,10 @@
 ---
 title: "Clustering Swing Behavior Within MLB Hitters"
 author:
-  - Joseph Dante Maurice
-  - Tai Fowler
+  - name: J. Dante Maurice
+    url: https://www.linkedin.com/in/joseph-dante-maurice-68a56526a/
+  - name: Tai Fowler
+    url: https://www.linkedin.com/in/tai-fowler-277573257/
 date: "July 25, 2025"
 toc: true
 format:
@@ -506,7 +508,7 @@ We selected GMM over hard clustering approaches like k-means for two key reasons
 
 These advantages were critical for a project of this scope, where we clustered swings individually for every hitter in MLB. Using a fixed number of clusters would have ignored inter-player variability, while manual tuning would be labor-intensive and introduce potential subjectivity or bias.
   
-Although we briefly considered applying Principal Component Analysis (PCA) to reduce dimensionality before clustering, we found that doing so did not substantially alter the clusters or resulting visualization. Ultimately, we retained the raw swing features to preserve the interpretability of the resulting clusters.
+Although we briefly considered applying Principal Component Analysis (PCA) to reduce dimensionality before clustering, we found that doing so did not substantially alter the clusters or resulting visualization. Ultimately, we retained the raw swing features to preserve interpretability.
 
 
 ## Results
@@ -709,6 +711,33 @@ arenado_plots$location_2s_plot
 
 
 :::
+
+To help understand what we are referring to when we say "Cluster 1 swing" vs a "Cluster 3 swing",
+below are two videos of Jose Altuve, both in two-strike counts.
+
+::: {.panel-tabset}
+
+## Cluster 1 Swing Example 1
+
+![Altuve strikes out on a low and inside splitter](swings/altuve_cluster1.gif)
+
+## Cluster 1 Swing Example 2
+
+![Altuve rolls over a high and outside slider](swings/altuve_cluster1v2.gif)
+
+## Cluster 3 Swing Example 1
+
+![Altuve drives a high fastball over the middle of the plate for a home run](swings/altuve_cluster3.gif)
+
+## Cluster 3 Swing Example 2
+
+![Altuve lines a belt-high sinker for a double](swings/altuve_cluster3v2.gif)
+
+:::
+
+As can be seen in the videos, Cluster 1 has a lot of Altuve's more awkward swings. He is more prone to swings and misses, and when he does hit the ball, it is usually weak contact. In the Cluster 3 swings, Altuve is unleashing a much better swing. He is balanced and swinging through the ball, resulting in much stronger contact.
+
+
 
 ### Chi-Square Testing
 Since we examined individual players, we need a method to generalize our findings across all batters. One way to do this is through a chi-square test for independence. Our null hypothesis was that the swing cluster is independent of whether a batter has two strikes or not. We ran the test on hitters with at least 420 swings (the median in our data set) to ensure there were enough points for reliable clustering and generalizations. After conducting the test on 307 hitters, 96 of them had statistically significant dependence between strikes and swing clusters after accounting for multiple testing, or about 31%.
