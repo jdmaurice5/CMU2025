@@ -513,8 +513,46 @@ Although we briefly considered applying Principal Component Analysis (PCA) to re
 
 ## Results
 
-After applying GMM clustering to each MLB hitter's swing data, we used mosaic plots to compare how the distribution of swings changed in certain situations. One situation we examined was how a player's swing changed when they had two strikes against them. When a hitter is one pitch away from striking out, they may change their swing in an attempt to put the ball in play and make something happen. Hitters may claim to "shorten up" or choke up on the bat, but now we can look behind the curtain and see what is going on.
+We applied GMM clustering on the five swing metrics to each MLB hitter. Each hitter has their own unique clustering, with each cluster containing a distinct region of a hitter’s swing distribution. We consider a hitter’s “best” cluster(s) to be the ones with both a high contact rate and a high proportion being squared up and blasts (to quantify quality of contact). Below, you can see how these factors vary by cluster for Jose Altuve
 
+```{r}
+library(dplyr)
+library(gt)
+
+altuve_plots$contact_by_cluster %>%
+  select(
+    cluster,
+    n,
+    contact_pct,
+    squared_up_pct,
+    blast_pct
+  ) %>%
+  gt() %>%
+  tab_header(
+    title = "Altuve Contact Quality by Cluster"
+  ) %>%
+  cols_label(
+    cluster = "Cluster",
+    n = "Number of Swings",
+    contact_pct = "Contact %",
+    squared_up_pct = "Squared Up %",
+    blast_pct = "Blast %"
+  ) %>%
+  fmt_percent(
+    columns = c(contact_pct, squared_up_pct, blast_pct),
+    decimals = 2
+  ) %>%
+  cols_align(
+    align = "center",
+    columns = everything()
+  ) %>%
+  opt_table_outline()
+
+```
+
+Looking at the table, it is clear that Altuve’s best results mostly come from swings in the third cluster. Cluster 3 has the highest percentages across the board, and it is also the cluster with the largest population. This makes sense, as Altuve is an elite player who should be getting off his “A” swing a large majority of the time. 
+
+After applying GMM clustering to each MLB hitter’s swing data, we used mosaic plots to compare how the distribution of swings changed in certain situations. One situation we examined was how a player’s swing changed when they had two strikes against them. When a hitter is one pitch away from striking out, they may change their swing in an attempt to put the ball in play and make something happen. Hitters may claim to “shorten up” or choke up on the bat, but now we can look behind the curtain and see what is going on.
 
 
 ::: {.panel-tabset}
@@ -540,7 +578,7 @@ arenado_plots$plot8
 :::
 
 
-Looking at a few of these plots, a notable trend emerged: hitters tend to use "worse" swings in two-strike counts compared to other situations. Below you can see how contact and quality of contact vary by cluster.
+Looking at a few of these plots, a notable trend emerged: hitters tend to use “worse” swings in two-strike counts compared to other situations. Below, you can see how contact and quality of contact vary by cluster for each of the players above.
 
 ::: {.panel-tabset}
 
@@ -655,7 +693,7 @@ arenado_plots$contact_by_cluster %>%
 
 :::
 
-These findings challenge the common belief that players adopt a more disciplined, contact-oriented approach with two strikes. Importantly, by "worse" swing, we do not imply that hitters are consciously choosing less effective swings. Instead, contextual factors (pitch type, location, etc) appear to induce swings from the lower-performing regions of a player's swing distribution. Our clustering doesn't suggest that players have five entirely distinct swing mechanics. Instead, we've captured different areas within each player's overall swing distribution. This allows us to examine when different swing types emerge and begin to explore why these shifts occur. A few such possibilities are the pitch location and pitch type. Here are how the swings are distributed when looking at those characteristics.
+These findings challenge the common belief that players adopt a more disciplined, contact-oriented approach with two strikes. Importantly, by “worse” swing, we do not imply that hitters are consciously choosing less effective swings. Instead, contextual factors (pitch type, location, etc) appear to induce swings from the lower-performing regions of a player’s swing distribution. Our clustering doesn’t suggest that players have five entirely distinct swing mechanics. Instead, we’ve captured different areas within each player’s overall swing distribution. This allows us to examine when different swing types emerge and begin to explore why these shifts occur. Such possibilities include the pitch location and pitch type. Here is how the swings are distributed when looking at those characteristics.
  	
 ::: {.panel-tabset}
 
@@ -712,30 +750,9 @@ arenado_plots$location_2s_plot
 
 :::
 
-To help understand what we are referring to when we say "Cluster 1 swing" vs a "Cluster 3 swing",
-below are videos of Jose Altuve, two swings from Cluster 1 and two swings from Cluster 3.
 
-::: {.panel-tabset}
 
-## Cluster 1 Swing Example 1
 
-![Altuve strikes out on a low and inside splitter](swings/altuve_cluster1.gif)
-
-## Cluster 1 Swing Example 2
-
-![Altuve rolls over a high and outside slider](swings/altuve_cluster1v2.gif)
-
-## Cluster 3 Swing Example 1
-
-![Altuve drives a high fastball over the middle of the plate for a home run](swings/altuve_cluster3.gif)
-
-## Cluster 3 Swing Example 2
-
-![Altuve lines a belt-high sinker for a double](swings/altuve_cluster3v2.gif)
-
-:::
-
-As can be seen in the videos, Cluster 1 has a lot of Altuve's more awkward swings. He is more prone to swings and misses, and when he does hit the ball, it is usually weak contact. In the Cluster 3 swings, Altuve is unleashing a much better swing. He is balanced and swinging through the ball, resulting in much stronger contact.
 
 
 
