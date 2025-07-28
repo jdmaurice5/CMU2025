@@ -3,8 +3,10 @@ title: "Clustering Swing Behavior Within MLB Hitters"
 author:
   - name: J. Dante Maurice
     url: https://www.linkedin.com/in/joseph-dante-maurice-68a56526a/
+    target: _blank
   - name: Tai Fowler
     url: https://www.linkedin.com/in/tai-fowler-277573257/
+    target: _blank
 date: "July 25, 2025"
 toc: true
 format:
