@@ -493,7 +493,7 @@ swing_data_2024 %>%
 
 For our analysis, we only wanted to consider full swings where the batter fully intended to make contact with the ball. We didn’t want to include check swings because the hitter is intentionally trying to stop himself from swinging and take the pitch. We also omitted bunts, as those are not true swings.
 	
-To aid in our analysis, we added two features to the data: squared up and blast. These are both indicators with values “TRUE” or “FALSE.” We created them using the definitions on Baseball Savant. A swing has “squared up” a ball when the exit velocity is at least 80% of its theoretical maximum. That percentage is also referred to as the squared-up rate. A blast is a swing where the squared-up percentage plus the bat speed equals at least 164. Adding these features enables us to evaluate the quality of a player’s swing, disregarding the outcome in the field.
+To aid in our analysis, we added two features to the data: squared up and blast. These are both indicators with values “TRUE” or “FALSE.” We created them using the definitions on Baseball Savant. A swing has “squared up” a ball when the exit velocity is at least 80% of its theoretical maximum. That percentage is also referred to as the squared-up rate. A blast is a swing where the squared-up percentage plus the bat speed equals at least 164. Adding these features enables us to evaluate the quality of a player’s swing, disregarding the outcome on the field.
 
 
 ## Methods
