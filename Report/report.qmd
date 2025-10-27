@@ -750,7 +750,30 @@ arenado_plots$location_2s_plot
 
 :::
 
+### Batter Hot and Cold Zones
 
+An interesting application of swing clustering is the creation of batter hot and cold zones using swing cluster as a proxy for swing quality. Because swing quality can be influenced by both pitch type and location, we can use a multinomial model to predict swing cluster based on those features. By generating a prediction grid across the strike zone, we obtain hitter-specific hot and cold zones based on swing quality independent of the outcome of the swing (e.g. contact or batting average). Below are examples of these zones for José Altuve.
+
+::: {.panel-tabset}
+
+## Altuve Fastball
+
+```{r}
+#| fig-height: 12
+#| fig-width: 16
+knitr::include_graphics("plots/altuve_fastballs.png")
+```
+
+## Altuve Curveball
+
+```{r}
+#| fig-height: 12
+#| fig-width: 16
+knitr::include_graphics("plots/altuve_curveball.png")
+```
+
+
+:::
 
 
 
